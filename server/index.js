@@ -1,0 +1,275 @@
+import 'dotenv/config';
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+
+import mongoose from 'mongoose';
+import cors from 'cors';
+import Campaign from './models/Campaign.js';
+import Message from './models/Message.js';
+import Settings from './models/Settings.js';
+import User from './models/User.js';
+import authRoutes from './routes/auth.js';
+import paymentRoutes from './routes/payment.js';
+import verifyToken from './middleware/auth.js';
+
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*", 
+    methods: ["GET", "POST"]
+  }
+});
+
+app.use(cors());
+app.use(express.json());
+
+// Socket.io Connection
+io.on('connection', (socket) => {
+  console.log('🔌 New client connected:', socket.id);
+  
+  socket.on('join_room', (userId) => {
+    socket.join(userId);
+    console.log(`👤 User ${userId} joined their private room`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('❌ Client disconnected');
+  });
+});
+
+
+app.use('/api/auth', authRoutes);
+app.use('/api/payment', paymentRoutes);
+
+const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI;
+
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('✅ Connected to MongoDB'))
+  .catch((err) => console.error('❌ MongoDB Connection Error:', err));
+
+// Dashboard Stats Endpoint
+app.get('/api/stats', verifyToken, async (req, res) => {
+  try {
+    const totalDMs = await Campaign.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(req.user.id) } },
+      { $group: { _id: null, total: { $sum: "$dmsSent" } } }
+    ]);
+    const campaignsCount = await Campaign.countDocuments({ userId: req.user.id });
+    const messagesCount = await Message.countDocuments({ userId: req.user.id });
+    
+    const sentMessages = await Message.countDocuments({ userId: req.user.id, type: 'sent' });
+    const receivedMessages = await Message.countDocuments({ userId: req.user.id, type: 'received' });
+    const aiSentMessages = await Message.countDocuments({ userId: req.user.id, type: 'sent', isAI: true });
+    
+    // Fetch unique contacts and user plan
+    const uniqueContacts = await Message.distinct('chatId', { userId: req.user.id });
+    const userProfile = await User.findById(req.user.id);
+
+    let accuracy = 0;
+    if (receivedMessages > 0) {
+      accuracy = Math.round((aiSentMessages / receivedMessages) * 100);
+      if (accuracy > 100) accuracy = 100;
+    }
+
+    res.json({
+      totalDMs: totalDMs[0]?.total || 0,
+      sentMessages,
+      receivedMessages,
+      campaigns: campaignsCount,
+      messages: messagesCount,
+      aiReplyRate: `${accuracy}%`,
+      plan: userProfile?.plan || 'free',
+      contactCount: uniqueContacts.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Campaigns API
+app.get('/api/campaigns', verifyToken, async (req, res) => {
+  const campaigns = await Campaign.find({ userId: req.user.id }).sort({ createdAt: -1 });
+  res.json(campaigns);
+});
+
+app.post('/api/campaigns', verifyToken, async (req, res) => {
+  try {
+    const newCampaign = new Campaign({ ...req.body, userId: req.user.id });
+    await newCampaign.save();
+    res.json(newCampaign);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/campaigns/:id', verifyToken, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const campaign = await Campaign.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { status },
+      { new: true }
+    );
+    res.json(campaign);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/campaigns/:id', verifyToken, async (req, res) => {
+  try {
+    await Campaign.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    res.json({ message: 'Campaign deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Messages API (Inbox)
+app.get('/api/messages', verifyToken, async (req, res) => {
+  const messages = await Message.find({ userId: req.user.id }).sort({ timestamp: 1 });
+  res.json(messages);
+});
+
+app.post('/api/messages', verifyToken, async (req, res) => {
+  try {
+    const { sender, text, type, chatId, platform } = req.body;
+    
+    // Check for Free Plan Limit (30 Unique Contacts)
+    const userProfile = await User.findById(req.user.id);
+    if (userProfile && userProfile.plan === 'free') {
+      const existingMessage = await Message.findOne({ userId: req.user.id, chatId: chatId || 'default' });
+      
+      // If this is a message to a NEW contact
+      if (!existingMessage) {
+        const uniqueContacts = await Message.distinct('chatId', { userId: req.user.id });
+        if (uniqueContacts.length >= 30) {
+          return res.status(403).json({ 
+            error: 'Contact limit reached.', 
+            message: 'You have reached the 30-contact limit on the Free plan. Please Upgrade to Pro for unlimited contacts.' 
+          });
+        }
+      }
+    }
+    
+    // Explicitly casting userId to ObjectId to ensure it saves correctly
+    const newMessage = new Message({
+      userId: new mongoose.Types.ObjectId(req.user.id),
+      sender,
+      text,
+      type: type || 'sent', // Default to sent if missing
+      chatId: chatId || 'default',
+      platform: platform || 'instagram',
+      videoUrl: req.body.videoUrl || '',
+      linkUrl: req.body.linkUrl || '',
+      timestamp: new Date()
+    });
+    
+    await newMessage.save();
+    console.log("✅ Message saved to DB:", newMessage._id);
+
+    // Emit new message via Socket.io to the specific user's room
+    io.to(req.user.id).emit('new_message', newMessage);
+
+    // AI Auto-Reply Logic
+    if (sender === 'user') {
+      const activeCampaigns = await Campaign.find({ userId: req.user.id, status: 'Active' });
+      const userMessage = text.toLowerCase();
+      
+      const match = activeCampaigns.find(c => {
+        const platformMatch = c.platform === 'all' || c.platform === (platform || 'instagram');
+        return platformMatch && userMessage.includes(c.trigger.toLowerCase());
+      });
+
+      if (match) {
+        const autoReply = new Message({
+          userId: new mongoose.Types.ObjectId(req.user.id),
+          chatId: chatId || 'default',
+          sender: 'AI Agent',
+          text: match.response,
+          type: 'sent',
+          platform: newMessage.platform,
+          videoUrl: match.videoUrl || '',
+          linkUrl: match.linkUrl || '',
+          isAI: true,
+          timestamp: new Date()
+        });
+        await autoReply.save();
+        console.log("🤖 AI Reply saved:", autoReply._id);
+        
+        // Emit AI reply via Socket.io to the specific user's room
+        io.to(req.user.id).emit('new_message', autoReply);
+        
+        return res.json({ original: newMessage, reply: autoReply });
+      } else {
+        // Default AI Fallback Response
+        const defaultReply = new Message({
+          userId: new mongoose.Types.ObjectId(req.user.id),
+          chatId: chatId || 'default',
+          sender: 'AI Agent',
+          text: "Thanks for reaching out! Our team will get back to you shortly.",
+          type: 'sent',
+          platform: newMessage.platform,
+          isAI: true,
+          timestamp: new Date()
+        });
+        await defaultReply.save();
+        console.log("🤖 Default Fallback AI Reply saved:", defaultReply._id);
+        
+        io.to(req.user.id).emit('new_message', defaultReply);
+        
+        return res.json({ original: newMessage, reply: defaultReply });
+      }
+    }
+
+    res.json(newMessage);
+
+  } catch (err) {
+    console.error("❌ Error saving message:", err.message);
+    res.status(500).json({ error: "DB Save Error: " + err.message });
+  }
+});
+
+app.delete('/api/messages/:id', verifyToken, async (req, res) => {
+  try {
+    await Message.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    res.json({ message: 'Message deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings API
+app.get('/api/settings', verifyToken, async (req, res) => {
+  try {
+    let settings = await Settings.findOne({ userId: req.user.id });
+    if (!settings) {
+      settings = new Settings({ userId: req.user.id });
+      await settings.save();
+    }
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings', verifyToken, async (req, res) => {
+  try {
+    const settings = await Settings.findOneAndUpdate(
+      { userId: req.user.id },
+      { ...req.body, updatedAt: new Date() },
+      { upsert: true, new: true }
+    );
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
+
