@@ -5,6 +5,9 @@ import { Server } from 'socket.io';
 
 import mongoose from 'mongoose';
 import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import compression from 'compression';
 import Campaign from './models/Campaign.js';
 import Message from './models/Message.js';
 import Settings from './models/Settings.js';
@@ -17,13 +20,29 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", 
+    origin: process.env.NODE_ENV === 'production' 
+      ? "https://dm-automation-app.vercel.app" 
+      : "*", 
     methods: ["GET", "POST"]
   }
 });
 
-app.use(cors());
+app.use(helmet());
+app.use(compression());
+app.use(morgan('combined'));
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? "https://dm-automation-app.vercel.app" 
+    : "*",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
+}));
 app.use(express.json());
+
+// Health Check Endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', timestamp: new Date() });
+});
 
 // Socket.io Connection
 io.on('connection', (socket) => {

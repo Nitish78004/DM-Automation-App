@@ -12,15 +12,18 @@ mongoose.connect(process.env.MONGODB_URI)
     await Campaign.deleteMany({});
     await Message.deleteMany({});
 
+    const testUserId = new mongoose.Types.ObjectId();
+    console.log(`👤 Using Test User ID: ${testUserId}`);
+
     await Campaign.create([
-      { name: 'Spring Sale Auto-Responder', trigger: 'SPRING24', response: 'Hi! Here is your 20% discount code: SPRING20', dmsSent: 45210, status: 'Active' },
-      { name: 'New Follower Welcome', trigger: 'Follow', response: 'Welcome to our community! Thanks for following.', dmsSent: 12804, status: 'Active' },
-      { name: 'Waitlist Inquiries', trigger: 'WAITLIST', response: 'You have been added to the waitlist!', dmsSent: 3420, status: 'Paused' }
+      { userId: testUserId, name: 'Spring Sale Auto-Responder', trigger: 'SPRING24', response: 'Hi! Here is your 20% discount code: SPRING20', dmsSent: 45210, status: 'Active' },
+      { userId: testUserId, name: 'New Follower Welcome', trigger: 'Follow', response: 'Welcome to our community! Thanks for following.', dmsSent: 12804, status: 'Active' },
+      { userId: testUserId, name: 'Waitlist Inquiries', trigger: 'WAITLIST', response: 'You have been added to the waitlist!', dmsSent: 3420, status: 'Paused' }
     ]);
 
     await Message.create([
-      { sender: 'AI Agent', text: 'Hello! This is a sample message to test your Inbox.', type: 'received', chatId: 'default', userId: new mongoose.Types.ObjectId() },
-      { sender: 'AI Agent', text: 'I am your AI assistant, ready to help with your DM automation!', type: 'sent', isAI: true, chatId: 'default', userId: new mongoose.Types.ObjectId() }
+      { userId: testUserId, text: 'Hello! This is a sample message to test your Inbox.', type: 'received', chatId: 'default', sender: 'user' },
+      { userId: testUserId, text: 'I am your AI assistant, ready to help with your DM automation!', type: 'sent', isAI: true, chatId: 'default', sender: 'AI Agent' }
     ]);
 
     console.log('✅ Database seeded successfully!');
