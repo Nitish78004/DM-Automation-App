@@ -385,6 +385,7 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    console.log("🚀 Connection Attempt to:", API_BASE_URL);
     setLoading(true);
     setError('');
     try {

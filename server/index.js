@@ -20,7 +20,10 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", 
+    origin: (origin, callback) => {
+      // Allow all origins to resolve connectivity, but in a way that allows credentials
+      callback(null, true);
+    },
     methods: ["GET", "POST"]
   }
 });
@@ -35,7 +38,10 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: "*",
+  origin: (origin, callback) => {
+    // Dynamically allow the origin of the request to satisfy credentials: true
+    callback(null, true);
+  },
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));
