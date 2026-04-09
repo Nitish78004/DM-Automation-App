@@ -44,6 +44,14 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date() });
 });
 
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    message: "🚀 Instagram DM Automation AI API is running!",
+    status: "Healthy",
+    docs: "Contact administrator for API documentation"
+  });
+});
+
 // Socket.io Connection
 io.on('connection', (socket) => {
   console.log('🔌 New client connected:', socket.id);
